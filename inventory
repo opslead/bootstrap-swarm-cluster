@@ -1,0 +1,4 @@
+[swarm]
+<IP Address> hostname=swarm-hel1-a 
+<IP Address> hostname=swarm-hel1-b
+<IP Address> hostname=swarm-hel1-c

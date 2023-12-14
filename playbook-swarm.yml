@@ -1,0 +1,103 @@
+- hosts: swarm
+  user: root
+  gather_facts: yes
+
+  vars:
+    sysctl_settings:
+      - { key: "net.core.somaxconn", value: 4096 }
+      - { key: "fs.file-max", value: 800000 }
+
+    packages:
+      - htop
+      - docker-ce 
+      - docker-ce-cli 
+      - containerd.io
+      - python3-docker
+
+    enabled_services:
+      - docker
+        
+  tasks:        
+    - name: Set ssh keys
+      template:
+        dest: /root/.ssh/authorized_keys
+        src: configs/keys
+        mode: 0600
+
+    - name: Update package cache
+      apt: update_cache=yes cache_valid_time=3600
+
+    - name: Install required packages
+      apt: pkg=gnupg state=present
+  
+    - name: Upgrade packages
+      apt: upgrade=safe
+
+    - name: Set a hostname
+      ansible.builtin.hostname:
+        name: "{{ hostname }}"
+        use: systemd
+
+    - name: Add Docker GPG apt Key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add Docker Repository
+      apt_repository:
+        repo: deb https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable
+        state: present
+
+    - name: Install required packages
+      apt: pkg={{ packages }} state=present
+
+    - name: Set timezone to CET
+      timezone: name=CET
+      notify: restart timedatectl
+
+    - name: Update sysctl configuration
+      sysctl:
+        name: "{{ item.key }}"
+        value: "{{ item.value }}"
+        sysctl_set: yes
+        state: present
+        reload: yes
+      with_items: "{{ sysctl_settings }}"
+
+    - name: Init swarm on the first node
+      community.general.docker_swarm:
+        state: present
+        advertise_addr: "{{ ansible_host }}"
+      register: result
+      when: inventory_hostname == groups['swarm'][0]
+
+    - name: Get join-token for manager nodes
+      set_fact:
+        join_token_manager: "{{ hostvars[groups['swarm'][0]].result.swarm_facts.JoinTokens.Manager }}"
+
+    - name: Get join-token for worker nodes
+      set_fact:
+        join_token_worker: "{{ hostvars[groups['swarm'][0]].result.swarm_facts.JoinTokens.Worker }}"
+
+    - name: Add nodes into cluster
+      community.docker.docker_swarm:
+        state: join
+        join_token: "{{ join_token_manager }}"
+        remote_addrs: "{{ hostvars[groups['swarm'][0]].ansible_default_ipv4.address }}"
+      when:
+        - inventory_hostname in groups['swarm']
+        - inventory_hostname != groups['swarm'][0]
+
+    - name: Enable services
+      service: name={{ item }} enabled=yes state=started
+      with_items: "{{ enabled_services }}"
+
+  handlers:
+    - name: restart timedatectl
+      command: /usr/bin/timedatectl set-ntp on
+
+    - name: update systemd
+      command: systemctl daemon-reload
+
+    - name: restart docker
+      action: service name=docker state=restarted
